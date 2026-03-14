@@ -8,7 +8,7 @@ $db = getDB();
 // Get cycle ID from URL
 $cycle_id = $_GET['cycle_id'] ?? 0;
 
-// Get cycle details
+// Get cycle details with contribution info
 $stmt = $db->prepare("SELECT * FROM cycles WHERE id = :id");
 $stmt->execute([':id' => $cycle_id]);
 $cycle = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -59,11 +59,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
             ]);
         }
         
-        logActivity('Assign Numbers', "Assigned random numbers for cycle ID: $cycle_id");
+        // Calculate and update expected end date based on frequency and member count
+        $member_count = count($members);
+        $start_date = new DateTime($cycle['start_date']);
+        
+        if ($cycle['payment_frequency'] == 'weekly') {
+            // Add weeks
+            $end_date = clone $start_date;
+            $end_date->modify('+' . ($member_count - 1) . ' weeks');
+        } else {
+            // Add months
+            $end_date = clone $start_date;
+            $end_date->modify('+' . ($member_count - 1) . ' months');
+        }
+        
+        // Update cycle with member count and expected end date
+        $updateStmt = $db->prepare("
+            UPDATE cycles 
+            SET total_members = :total_members, 
+                expected_end_date = :expected_end_date,
+                status = 'active'
+            WHERE id = :cycle_id
+        ");
+        
+        $updateStmt->execute([
+            ':total_members' => $member_count,
+            ':expected_end_date' => $end_date->format('Y-m-d'),
+            ':cycle_id' => $cycle_id
+        ]);
+        
+        logActivity('Assign Numbers', "Assigned random numbers for cycle ID: $cycle_id with $member_count members");
         
         $db->commit();
         
-        $_SESSION['success'] = "Random numbers assigned successfully!";
+        $_SESSION['success'] = "Random numbers assigned successfully! The cycle is now active.";
         header("Location: payout_order.php?cycle_id=$cycle_id");
         exit();
     } catch (Exception $e) {
@@ -116,19 +145,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
 
                 <!-- Cycle Info Card -->
                 <div class="mb-8 bg-white rounded-xl shadow p-6">
-                    <div class="flex items-center justify-between">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between">
                         <div>
                             <h2 class="text-lg font-semibold text-gray-900"><?php echo htmlspecialchars($cycle['name']); ?></h2>
                             <p class="text-gray-600">
                                 Start: <?php echo date('M d, Y', strtotime($cycle['start_date'])); ?>
-                                <?php if ($cycle['expected_end_date']): ?>
-                                    • Expected End: <?php echo date('M d, Y', strtotime($cycle['expected_end_date'])); ?>
-                                <?php endif; ?>
                             </p>
                         </div>
-                        <span class="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-full text-sm font-medium">
-                            <?php echo ucfirst($cycle['status']); ?>
-                        </span>
+                        <div class="mt-4 md:mt-0 flex items-center space-x-4">
+                            <div class="text-right">
+                                <p class="text-sm text-gray-500">Contribution</p>
+                                <p class="text-lg font-bold text-emerald-600">KSh <?php echo number_format($cycle['contribution_amount'] ?? 0, 2); ?></p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm text-gray-500">Frequency</p>
+                                <p class="text-lg font-bold text-blue-600"><?php echo ucfirst($cycle['payment_frequency'] ?? 'monthly'); ?></p>
+                            </div>
+                            <span class="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-full text-sm font-medium">
+                                <?php echo ucfirst($cycle['status']); ?>
+                            </span>
+                        </div>
                     </div>
                 </div>
 
@@ -157,41 +193,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
                             </div>
                             
                             <div class="p-6">
-                                <div class="mb-6">
-                                    <div class="flex items-center justify-between p-4 bg-blue-50 rounded-lg">
-                                        <div>
-                                            <p class="font-medium text-blue-900">Active Members Ready for Assignment</p>
-                                            <p class="text-blue-700 text-sm mt-1">
-                                                Total active members: <span class="font-bold"><?php echo $active_members_count; ?></span>
-                                            </p>
-                                        </div>
-                                        <div class="text-3xl font-bold text-blue-600">
-                                            <?php echo $active_members_count; ?>
-                                        </div>
+                                <!-- Cycle Summary -->
+                                <div class="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div class="bg-gray-50 rounded-lg p-4">
+                                        <p class="text-sm text-gray-600 mb-1">Contribution Amount</p>
+                                        <p class="text-2xl font-bold text-emerald-600">KSh <?php echo number_format($cycle['contribution_amount'] ?? 0, 2); ?></p>
+                                    </div>
+                                    <div class="bg-gray-50 rounded-lg p-4">
+                                        <p class="text-sm text-gray-600 mb-1">Payment Frequency</p>
+                                        <p class="text-2xl font-bold text-blue-600"><?php echo ucfirst($cycle['payment_frequency'] ?? 'monthly'); ?></p>
+                                    </div>
+                                    <div class="bg-gray-50 rounded-lg p-4">
+                                        <p class="text-sm text-gray-600 mb-1">Active Members</p>
+                                        <p class="text-2xl font-bold text-gray-900"><?php echo $active_members_count; ?></p>
                                     </div>
                                 </div>
 
                                 <!-- How it works -->
-                                <div class="mb-8 bg-gray-50 border border-gray-200 rounded-lg p-4">
-                                    <h4 class="font-medium text-gray-900 mb-2">How Random Assignment Works:</h4>
-                                    <ul class="text-gray-700 space-y-2 text-sm">
+                                <div class="mb-8 bg-gradient-to-r from-blue-50 to-emerald-50 rounded-lg p-6">
+                                    <h4 class="font-medium text-gray-900 mb-3">What happens after assignment:</h4>
+                                    <ul class="text-gray-700 space-y-3 text-sm">
                                         <li class="flex items-start">
-                                            <i class="fas fa-random text-emerald-600 mt-1 mr-2"></i>
-                                            <span>Each active member receives a unique random number (1 to <?php echo $active_members_count; ?>)</span>
+                                            <i class="fas fa-check-circle text-emerald-600 mt-1 mr-3"></i>
+                                            <span>Each of the <strong><?php echo $active_members_count; ?> active members</strong> receives a unique random number</span>
                                         </li>
                                         <li class="flex items-start">
-                                            <i class="fas fa-sort-numeric-up text-emerald-600 mt-1 mr-2"></i>
-                                            <span>Payout order is determined by ascending number order</span>
+                                            <i class="fas fa-sort-numeric-up text-emerald-600 mt-1 mr-3"></i>
+                                            <span>Payout order is determined by ascending number order (1 gets payout first)</span>
                                         </li>
                                         <li class="flex items-start">
-                                            <i class="fas fa-lock text-emerald-600 mt-1 mr-2"></i>
+                                            <i class="fas fa-calendar-alt text-emerald-600 mt-1 mr-3"></i>
+                                            <span>Cycle duration will be <strong><?php echo $active_members_count; ?> <?php echo $cycle['payment_frequency'] == 'weekly' ? 'weeks' : 'months'; ?></strong> (one payout per <?php echo $cycle['payment_frequency']; ?>)</span>
+                                        </li>
+                                        <li class="flex items-start">
+                                            <i class="fas fa-lock text-emerald-600 mt-1 mr-3"></i>
                                             <span>Once assigned, numbers cannot be changed for transparency</span>
                                         </li>
-                                        <li class="flex items-start">
-                                            <i class="fas fa-eye text-emerald-600 mt-1 mr-2"></i>
-                                            <span>All members can see the payout order for transparency</span>
-                                        </li>
                                     </ul>
+                                </div>
+
+                                <!-- Expected Timeline Preview -->
+                                <div class="mb-8 bg-white border border-emerald-200 rounded-lg p-4">
+                                    <h4 class="font-medium text-gray-900 mb-3 flex items-center">
+                                        <i class="fas fa-clock text-emerald-600 mr-2"></i>
+                                        Expected Timeline
+                                    </h4>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                        <div>
+                                            <p class="text-gray-600">Start Date:</p>
+                                            <p class="font-medium text-gray-900"><?php echo date('M d, Y', strtotime($cycle['start_date'])); ?></p>
+                                        </div>
+                                        <div>
+                                            <p class="text-gray-600">Expected End Date:</p>
+                                            <p class="font-medium text-gray-900">
+                                                <?php
+                                                $end_date = new DateTime($cycle['start_date']);
+                                                if ($cycle['payment_frequency'] == 'weekly') {
+                                                    $end_date->modify('+' . ($active_members_count - 1) . ' weeks');
+                                                } else {
+                                                    $end_date->modify('+' . ($active_members_count - 1) . ' months');
+                                                }
+                                                echo $end_date->format('M d, Y');
+                                                ?>
+                                            </p>
+                                        </div>
+                                        <div>
+                                            <p class="text-gray-600">Total Payouts:</p>
+                                            <p class="font-medium text-gray-900"><?php echo $active_members_count; ?> payouts</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-gray-600">Total Collections:</p>
+                                            <p class="font-medium text-gray-900">
+                                                KSh <?php echo number_format(($cycle['contribution_amount'] ?? 0) * $active_members_count, 2); ?>
+                                            </p>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <!-- Warning -->
@@ -202,19 +278,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
                                             <h4 class="font-medium text-red-900">Important Notice</h4>
                                             <p class="text-red-800 text-sm mt-1">
                                                 Once you assign random numbers, <strong class="font-bold">they cannot be changed</strong>. 
-                                                This ensures fairness and transparency. Please double-check that all active members 
-                                                are present before proceeding.
+                                                This ensures fairness and transparency. The cycle will become active immediately after assignment.
                                             </p>
                                         </div>
                                     </div>
                                 </div>
 
-                                <!-- Members List -->
+                                <!-- Members List Summary -->
                                 <div class="mb-8">
                                     <h4 class="font-medium text-gray-900 mb-4">Active Members to be Assigned:</h4>
-                                    <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                                    <div class="bg-white border border-gray-200 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
                                         <table class="min-w-full divide-y divide-gray-200">
-                                            <thead class="bg-gray-50">
+                                            <thead class="bg-gray-50 sticky top-0">
                                                 <tr>
                                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">#</th>
                                                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Member</th>
@@ -277,12 +352,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
                                 </div>
 
                                 <!-- Submit Button -->
-                                <form method="POST" action="">
+                                <form method="POST" action="" onsubmit="return confirmAssignment()">
                                     <button type="submit" 
-                                            class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 font-medium">
+                                            class="w-full bg-emerald-600 text-white px-4 py-4 rounded-lg hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 font-medium text-lg transition-colors"
+                                            <?php echo empty($members) ? 'disabled' : ''; ?>>
                                         <i class="fas fa-random mr-2"></i>
                                         Assign Random Numbers to <?php echo $active_members_count; ?> Members
                                     </button>
+                                    <p class="text-center text-xs text-gray-500 mt-3">
+                                        <i class="fas fa-lock mr-1"></i>
+                                        This action is permanent and cannot be undone
+                                    </p>
                                 </form>
                             </div>
                         </div>
@@ -291,14 +371,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
 
                 <!-- Navigation -->
                 <div class="flex justify-between mt-8">
-                    <a href="index.php" class="text-emerald-600 hover:text-emerald-800">
+                    <a href="index.php" class="text-emerald-600 hover:text-emerald-800 flex items-center">
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back to Cycles
                     </a>
                     
                     <?php if ($already_assigned): ?>
                         <a href="payout_order.php?cycle_id=<?php echo $cycle_id; ?>" 
-                           class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                           class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 flex items-center">
                             View Payout Order
                             <i class="fas fa-arrow-right ml-2"></i>
                         </a>
@@ -311,6 +391,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$already_assigned) {
     <script>
         function toggleSidebar() {
             document.querySelector('.sidebar').classList.toggle('active');
+        }
+
+        function confirmAssignment() {
+            return confirm('Are you sure you want to assign random numbers? This action cannot be undone and the cycle will become active immediately.');
         }
     </script>
 </body>
